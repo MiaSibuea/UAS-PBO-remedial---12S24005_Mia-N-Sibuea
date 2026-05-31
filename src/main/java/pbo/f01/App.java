@@ -1,138 +1,167 @@
 package pbo.f01;
 
+/**
+ * 12S24005 - MIA N SIBUEA
+ */
+
+import javax.persistence.*;
+import pbo.f01.model.Parking;
+import pbo.f01.model.Vehicle;
+
 import java.util.List;
 import java.util.Scanner;
-
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.EntityManagerFactory;
-import jakarta.persistence.Persistence;
+import java.util.logging.*;
 
 public class App {
 
-    private static EntityManagerFactory factory;
-    private static EntityManager entityManager;
+    private static EntityManager em;
 
     public static void main(String[] args) {
+        Logger.getLogger("org.hibernate").setLevel(Level.OFF);
+        Logger.getLogger("com.zaxxer").setLevel(Level.OFF);
+        Logger.getLogger("").setLevel(Level.OFF);
+
+        EntityManagerFactory emf =
+            Persistence.createEntityManagerFactory("park-it-pu");
+        em = emf.createEntityManager();
 
         Scanner scanner = new Scanner(System.in);
-
-        factory = Persistence.createEntityManagerFactory("parkit-pu");
-        entityManager = factory.createEntityManager();
-
         while (scanner.hasNextLine()) {
+            String line = scanner.nextLine().trim();
+            if (line.isEmpty()) continue;
 
-            String input = scanner.nextLine();
+            String[] parts = line.split("#");
+            String command = parts[0].trim();
 
-            if (input.equals("---")) break;
-
-            String[] parts = input.split("#");
-
-            switch (parts[0]) {
-
+            switch (command) {
                 case "area-add":
-                    addArea(parts);
+                    if (parts.length >= 4) {
+                        areaAdd(parts[1].trim(),
+                                Integer.parseInt(parts[2].trim()),
+                                parts[3].trim());
+                    }
                     break;
 
                 case "vehicle-add":
-                    addVehicle(parts);
+                    if (parts.length >= 4) {
+                        vehicleAdd(parts[1].trim(),
+                                   parts[2].trim(),
+                                   parts[3].trim());
+                    }
                     break;
 
                 case "park":
-                    parkVehicle(parts);
+                    if (parts.length >= 3) {
+                        park(parts[1].trim(), parts[2].trim());
+                    }
                     break;
 
                 case "display-all":
                     displayAll();
                     break;
+
+                default:
+                    break;
             }
         }
 
-        entityManager.close();
-        factory.close();
+        em.close();
+        emf.close();
         scanner.close();
     }
 
-    private static void addArea(String[] parts) {
+    private static void areaAdd(String name, int capacity, String allowedType) {
+        if (findAreaByName(name) != null) return;
 
-        entityManager.getTransaction().begin();
-
-        AreaParkir area = entityManager.find(AreaParkir.class, parts[1]);
-
-        if (area == null) {
-            area = new AreaParkir(parts[1],
-                    Integer.parseInt(parts[2]),
-                    parts[3]);
-            entityManager.persist(area);
-        }
-
-        entityManager.getTransaction().commit();
+        EntityTransaction tx = em.getTransaction();
+        tx.begin();
+        em.persist(new Parking(name, capacity, allowedType));
+        tx.commit();
     }
 
-    private static void addVehicle(String[] parts) {
+    private static void vehicleAdd(String plateNumber, String owner, String type) {
+        if (findVehicleByPlate(plateNumber) != null) return;
 
-        entityManager.getTransaction().begin();
-
-        Vehicle v = entityManager.find(Vehicle.class, parts[1]);
-
-        if (v == null) {
-            v = new Vehicle(parts[1], parts[2], parts[3]);
-            entityManager.persist(v);
-        }
-
-        entityManager.getTransaction().commit();
+        EntityTransaction tx = em.getTransaction();
+        tx.begin();
+        em.persist(new Vehicle(plateNumber, owner, type));
+        tx.commit();
     }
 
-    private static void parkVehicle(String[] parts) {
+    private static void park(String plateNumber, String areaName) {
+        Vehicle vehicle = findVehicleByPlate(plateNumber);
+        if (vehicle == null) return;
 
-        entityManager.getTransaction().begin();
+        Parking area = findAreaByName(areaName);
+        if (area == null) return;
 
-        Vehicle v = entityManager.find(Vehicle.class, parts[1]);
-        AreaParkir a = entityManager.find(AreaParkir.class, parts[2]);
+        if (!area.allowsType(vehicle.getType())) return;
 
-        if (v != null && a != null) {
+        Long count = em.createQuery(
+                "SELECT COUNT(v) FROM Vehicle v WHERE v.parking = :area",
+                Long.class)
+            .setParameter("area", area)
+            .getSingleResult();
 
-            if (v.getParkingArea() == null &&
-                v.getType().equals(a.getAllowedType()) &&
-                a.getVehicles().size() < a.getCapacity()) {
+        if (count >= area.getCapacity()) return;
 
-                v.setParkingArea(a);
-                entityManager.merge(v);
-            }
-        }
-
-        entityManager.getTransaction().commit();
+        EntityTransaction tx = em.getTransaction();
+        tx.begin();
+        vehicle.setParking(area);
+        em.merge(vehicle);
+        tx.commit();
     }
 
     private static void displayAll() {
-
-        List<AreaParkir> areas = entityManager.createQuery(
-                "SELECT a FROM AreaParkir a ORDER BY a.name",
-                AreaParkir.class
-        ).getResultList();
-
-        for (AreaParkir area : areas) {
-
-            List<Vehicle> vehicles = entityManager.createQuery(
-                    "SELECT v FROM Vehicle v WHERE v.parkingArea.name = :name ORDER BY v.plateNumber",
-                    Vehicle.class
-            )
-            .setParameter("name", area.getName())
+        List<Parking> areas = em.createQuery(
+                "SELECT a FROM Parking a ORDER BY a.name ASC",
+                Parking.class)
             .getResultList();
 
-            System.out.println(
-                    area.getName() + " " +
-                    area.getAllowedType() + " " +
-                    area.getCapacity() + "|" +
-                    vehicles.size()
-            );
+        for (Parking area : areas) {
+            Long count = em.createQuery(
+                    "SELECT COUNT(v) FROM Vehicle v WHERE v.parking = :area",
+                    Long.class)
+                .setParameter("area", area)
+                .getSingleResult();
+
+            System.out.println(area.getName() + " " + area.getAllowedType()
+                + " " + area.getCapacity() + "|" + count);
+
+            List<Vehicle> vehicles = em.createQuery(
+                    "SELECT v FROM Vehicle v WHERE v.parking = :area" +
+                    " ORDER BY v.plateNumber ASC",
+                    Vehicle.class)
+                .setParameter("area", area)
+                .getResultList();
 
             for (Vehicle v : vehicles) {
-                System.out.println(
-                        v.getPlateNumber() + " " +
-                        v.getOwner() + " " +
-                        v.getType()
-                );
+                System.out.println(v);
             }
+        }
+    }
+
+    private static Parking findAreaByName(String name) {
+        try {
+            return em.createQuery(
+                    "SELECT a FROM Parking a WHERE a.name = :name",
+                    Parking.class)
+                .setParameter("name", name)
+                .getSingleResult();
+        } catch (NoResultException e) {
+            return null;
+        }
+    }
+
+    private static Vehicle findVehicleByPlate(String plate) {
+        try {
+            return em.createQuery(
+                    "SELECT v FROM Vehicle v WHERE v.plateNumber = :plate",
+                    Vehicle.class)
+                .setParameter("plate", plate)
+                .getSingleResult();
+        } catch (NoResultException e) {
+            return null;
         }
     }
 }
